@@ -29,3 +29,21 @@ CREATE TABLE IF NOT EXISTS login_attempts (
   count    INTEGER NOT NULL,
   reset_at INTEGER NOT NULL
 );
+
+-- Все попытки ответа: нужны для статистики (точность, решено с первой попытки, активность)
+CREATE TABLE IF NOT EXISTS attempts (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  task_id    TEXT NOT NULL,
+  correct    INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attempts_user ON attempts(user_id, created_at);
+
+-- Отметка «теория уровня изучена»: без неё задачи уровня не принимаются
+CREATE TABLE IF NOT EXISTS theory_read (
+  user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  level_id INTEGER NOT NULL,
+  read_at  INTEGER NOT NULL,
+  PRIMARY KEY (user_id, level_id)
+);

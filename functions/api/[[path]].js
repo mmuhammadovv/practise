@@ -37,6 +37,11 @@ async function solvedSet(db, userId) {
   return new Set(results.map((r) => r.task_id));
 }
 
+async function theoryReadSet(db, userId) {
+  const { results } = await db.prepare("SELECT level_id FROM theory_read WHERE user_id = ?").bind(userId).all();
+  return new Set(results.map((r) => r.level_id));
+}
+
 // Уровень 1 открыт всегда, следующий — когда в предыдущем решено достаточно задач
 function levelStates(solved) {
   let prevDone = true;
@@ -102,8 +107,40 @@ const routes = {
 
   "GET /me": async ({ user }) => json({ user }),
 
+  "POST /theory": async ({ db, user, request }) => {
+    const { levelId } = await readBody(request);
+    const solved = await solvedSet(db, user.id);
+    const state = levelStates(solved).find((s) => s.level.id === levelId);
+    if (!state) return fail(404, "Уровень не найден");
+    if (!state.unlocked) return fail(403, "Этот уровень ещё закрыт");
+    await db
+      .prepare("INSERT OR IGNORE INTO theory_read (user_id, level_id, read_at) VALUES (?, ?, ?)")
+      .bind(user.id, levelId, Date.now())
+      .run();
+    return json({ ok: true });
+  },
+
+  // Сырые данные для статистики: дни и серии считаются в браузере, в часовом поясе пользователя
+  "GET /stats": async ({ db, user }) => {
+    const [solved, attempts, joined] = await Promise.all([
+      db.prepare("SELECT task_id, solved_at FROM progress WHERE user_id = ? ORDER BY solved_at").bind(user.id).all(),
+      db
+        .prepare("SELECT task_id, correct, created_at FROM attempts WHERE user_id = ? ORDER BY created_at")
+        .bind(user.id)
+        .all(),
+      db.prepare("SELECT created_at FROM users WHERE id = ?").bind(user.id).first(),
+    ]);
+    return json({
+      joinedAt: joined?.created_at,
+      solved: solved.results,
+      attempts: attempts.results,
+      levels: LEVELS.map((l) => ({ id: l.id, title: l.title, tasks: l.tasks.map((t) => ({ id: t.id, title: t.title })) })),
+    });
+  },
+
   "GET /levels": async ({ db, user }) => {
     const solved = await solvedSet(db, user.id);
+    const read = await theoryReadSet(db, user.id);
     const levels = levelStates(solved).map(({ level, solvedCount, required, unlocked, passed }) => ({
       id: level.id,
       title: level.title,
@@ -113,6 +150,7 @@ const routes = {
       required,
       unlocked,
       passed,
+      theoryRead: read.has(level.id),
       tasks: unlocked
         ? level.tasks.map((t) => ({ ...publicTask(t, solved.has(t.id)), solved: solved.has(t.id) }))
         : [],
@@ -130,8 +168,16 @@ const routes = {
     const before = levelStates(solved);
     const idx = before.findIndex((s) => s.level.id === found.level.id);
     if (!before[idx].unlocked) return fail(403, "Этот уровень ещё закрыт");
+    if (!(await theoryReadSet(db, user.id)).has(found.level.id)) {
+      return fail(403, "Сначала изучите теорию этого уровня");
+    }
 
-    if (!checkAnswer(found.task, answer)) return json({ correct: false });
+    const correct = checkAnswer(found.task, answer);
+    await db
+      .prepare("INSERT INTO attempts (user_id, task_id, correct, created_at) VALUES (?, ?, ?, ?)")
+      .bind(user.id, taskId, correct ? 1 : 0, Date.now())
+      .run();
+    if (!correct) return json({ correct: false });
 
     await db
       .prepare("INSERT OR IGNORE INTO progress (user_id, task_id, solved_at) VALUES (?, ?, ?)")
