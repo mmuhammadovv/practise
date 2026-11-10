@@ -5,5 +5,5 @@ pages_build_output_dir = "public"
 [[d1_databases]]
 binding = "DB"
 database_name = "cyber-path-db"
-# Замените на id из команды: npx wrangler d1 create cyber-path-db
-database_id = "00000000-0000-0000-0000-000000000000"
+# id базы из команды: npx wrangler d1 create cyber-path-db
+database_id = "758492f1-24b3-4a4c-9f79-722bb1468d72"
