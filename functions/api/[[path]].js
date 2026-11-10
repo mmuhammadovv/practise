@@ -12,6 +12,7 @@ import {
   clearLoginFails,
 } from "../../src/auth.js";
 import { LEVELS, requiredFor, findTask, checkAnswer, publicTask } from "../../src/tasks.js";
+import { stepIds } from "../../public/lessons.js";
 
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,32}$/;
 
@@ -35,6 +36,11 @@ async function readBody(request) {
 async function solvedSet(db, userId) {
   const { results } = await db.prepare("SELECT task_id FROM progress WHERE user_id = ?").bind(userId).all();
   return new Set(results.map((r) => r.task_id));
+}
+
+async function doneStepsSet(db, userId) {
+  const { results } = await db.prepare("SELECT step_id FROM study_steps WHERE user_id = ?").bind(userId).all();
+  return new Set(results.map((r) => r.step_id));
 }
 
 async function theoryReadSet(db, userId) {
@@ -107,17 +113,36 @@ const routes = {
 
   "GET /me": async ({ user }) => json({ user }),
 
-  "POST /theory": async ({ db, user, request }) => {
-    const { levelId } = await readBody(request);
+  // Отметить шаг маршрута изученным. Шаги проходятся строго по порядку.
+  // Когда пройдены все шаги уровня, открываются его задачи.
+  "POST /step": async ({ db, user, request }) => {
+    const { stepId } = await readBody(request);
+    const levelId = Number(String(stepId).split("-")[0]);
+    const ids = stepIds(levelId);
+    const idx = ids.indexOf(stepId);
+    if (idx === -1) return fail(404, "Шаг не найден");
+
     const solved = await solvedSet(db, user.id);
     const state = levelStates(solved).find((s) => s.level.id === levelId);
-    if (!state) return fail(404, "Уровень не найден");
-    if (!state.unlocked) return fail(403, "Этот уровень ещё закрыт");
+    if (!state || !state.unlocked) return fail(403, "Этот уровень ещё закрыт");
+
+    const done = await doneStepsSet(db, user.id);
+    if (idx > 0 && !done.has(ids[idx - 1])) return fail(409, "Сначала пройдите предыдущий шаг");
+
     await db
-      .prepare("INSERT OR IGNORE INTO theory_read (user_id, level_id, read_at) VALUES (?, ?, ?)")
-      .bind(user.id, levelId, Date.now())
+      .prepare("INSERT OR IGNORE INTO study_steps (user_id, step_id, done_at) VALUES (?, ?, ?)")
+      .bind(user.id, stepId, Date.now())
       .run();
-    return json({ ok: true });
+    done.add(stepId);
+
+    const allDone = ids.every((id) => done.has(id));
+    if (allDone) {
+      await db
+        .prepare("INSERT OR IGNORE INTO theory_read (user_id, level_id, read_at) VALUES (?, ?, ?)")
+        .bind(user.id, levelId, Date.now())
+        .run();
+    }
+    return json({ ok: true, theoryRead: allDone });
   },
 
   // Сырые данные для статистики: дни и серии считаются в браузере, в часовом поясе пользователя
@@ -141,6 +166,7 @@ const routes = {
   "GET /levels": async ({ db, user }) => {
     const solved = await solvedSet(db, user.id);
     const read = await theoryReadSet(db, user.id);
+    const steps = await doneStepsSet(db, user.id);
     const levels = levelStates(solved).map(({ level, solvedCount, required, unlocked, passed }) => ({
       id: level.id,
       title: level.title,
@@ -151,6 +177,7 @@ const routes = {
       unlocked,
       passed,
       theoryRead: read.has(level.id),
+      doneSteps: stepIds(level.id).filter((id) => steps.has(id)),
       tasks: unlocked
         ? level.tasks.map((t) => ({ ...publicTask(t, solved.has(t.id)), solved: solved.has(t.id) }))
         : [],

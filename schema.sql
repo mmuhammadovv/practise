@@ -47,3 +47,11 @@ CREATE TABLE IF NOT EXISTS theory_read (
   read_at  INTEGER NOT NULL,
   PRIMARY KEY (user_id, level_id)
 );
+
+-- Пройденные шаги маршрута изучения (например, «1-3»)
+CREATE TABLE IF NOT EXISTS study_steps (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  step_id TEXT NOT NULL,
+  done_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, step_id)
+);

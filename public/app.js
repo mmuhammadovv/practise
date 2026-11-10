@@ -181,7 +181,7 @@ function viewDashboard() {
               !l.unlocked
                 ? "Закрыт. Пройдите предыдущий уровень."
                 : !l.theoryRead
-                ? "Начните с теории."
+                ? `Начните с маршрута изучения: пройдено шагов ${l.doneSteps.length}.`
                 : `Решено ${l.solvedCount}/${l.total}. Для следующего уровня нужно ${l.required}.`
             )
           )
@@ -191,58 +191,159 @@ function viewDashboard() {
   );
 }
 
-function renderLesson(blocks) {
+function renderBlocks(blocks) {
+  return blocks.map((b) => {
+    if (b.h) return h("h3", {}, b.h);
+    if (b.p) return rich(b.p, "p");
+    if (b.note) return h("aside", { class: "note" }, rich(b.note));
+    if (b.list) return h("ul", {}, b.list.map((li) => h("li", {}, rich(li, "span"))));
+    if (b.table)
+      return h(
+        "div",
+        { class: "table-wrap" },
+        h(
+          "table",
+          {},
+          h("thead", {}, h("tr", {}, b.table.head.map((c) => h("th", { scope: "col" }, c)))),
+          h("tbody", {}, b.table.rows.map((r) => h("tr", {}, r.map((c) => h("td", {}, rich(c, "span"))))))
+        )
+      );
+    return null;
+  });
+}
+
+const LINK_KINDS = {
+  video: ["▶", "Видео"],
+  playlist: ["▶", "Плейлист"],
+  search: ["🔎", "Поиск на YouTube"],
+  course: ["🎓", "Курс"],
+  article: ["📄", "Статьи"],
+  practice: ["🛠", "Практика"],
+};
+
+function renderLinks(links) {
+  if (!links?.length) return null;
   return h(
-    "article",
-    { class: "lesson" },
-    blocks.map((b) => {
-      if (b.h) return h("h2", {}, b.h);
-      if (b.p) return rich(b.p, "p");
-      if (b.note) return h("aside", { class: "note" }, rich(b.note));
-      if (b.list) return h("ul", {}, b.list.map((li) => h("li", {}, rich(li, "span"))));
-      if (b.table)
+    "div",
+    { class: "materials" },
+    h("h3", {}, "Материалы"),
+    h(
+      "ul",
+      {},
+      links.map((l) => {
+        const [icon, label] = LINK_KINDS[l.kind] || ["🔗", "Ссылка"];
         return h(
-          "div",
-          { class: "table-wrap" },
+          "li",
+          {},
+          h("span", { class: "mat-icon", "aria-hidden": "true" }, icon),
           h(
-            "table",
+            "div",
             {},
-            h("thead", {}, h("tr", {}, b.table.head.map((c) => h("th", { scope: "col" }, c)))),
-            h("tbody", {}, b.table.rows.map((r) => h("tr", {}, r.map((c) => h("td", {}, rich(c, "span"))))))
+            h("a", { href: l.url, target: "_blank", rel: "noopener noreferrer" }, l.title),
+            h("div", { class: "muted small" }, label + (l.note ? " · " + l.note : ""))
           )
         );
-      return null;
-    })
+      })
+    )
   );
 }
 
 function viewTheory(level) {
-  const btnText = level.theoryRead ? "К задачам →" : "Я изучил теорию → к задачам";
+  const steps = LESSONS[level.id] || [];
+  const done = new Set(level.doneSteps || []);
+  const currentIdx = steps.findIndex((s) => !done.has(s.id));
   const err = h("p", { class: "error", role: "alert" });
-  const go = h(
-    "button",
-    {
-      class: "btn",
-      onclick: async () => {
-        go.disabled = true;
-        try {
-          if (!level.theoryRead) await api("/theory", { levelId: level.id });
-          location.hash = `#/level/${level.id}/tasks`;
-        } catch (e) {
-          err.textContent = e.message;
-          go.disabled = false;
-        }
-      },
-    },
-    btnText
+  const sections = [];
+
+  const markDone = async (step, btn) => {
+    btn.disabled = true;
+    err.textContent = "";
+    try {
+      const res = await api("/step", { stepId: step.id });
+      level.doneSteps = [...done, step.id];
+      if (res.theoryRead) level.theoryRead = true;
+      viewTheory(level);
+      const next = document.getElementById("step-" + (steps[steps.indexOf(step) + 1]?.id || ""));
+      (next || document.querySelector(".cta"))?.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (e) {
+      err.textContent = e.message;
+      btn.disabled = false;
+    }
+  };
+
+  const route = h(
+    "ol",
+    { class: "route" },
+    steps.map((s, i) => {
+      const state = done.has(s.id) ? "done" : i === currentIdx ? "current" : "next";
+      return h(
+        "li",
+        { class: `route-item ${state}` },
+        h(
+          "button",
+          { type: "button", class: "route-btn", onclick: () => sections[i].scrollIntoView({ behavior: "smooth", block: "start" }) },
+          h("span", { class: "route-dot", "aria-hidden": "true" }, state === "done" ? "✓" : i + 1),
+          h("span", { class: "route-title" }, s.title),
+          h("span", { class: "route-time muted small" }, s.time)
+        )
+      );
+    })
   );
+
+  steps.forEach((s, i) => {
+    const isDone = done.has(s.id);
+    const isCurrent = i === currentIdx;
+    const btn = h("button", { class: "btn", type: "button" }, "✓ Шаг изучен");
+    btn.addEventListener("click", () => markDone(s, btn));
+    const details = h(
+      "details",
+      { class: `card step ${isDone ? "done" : isCurrent ? "current" : "next"}`, id: "step-" + s.id, open: isCurrent },
+      h(
+        "summary",
+        {},
+        h("span", { class: "step-num" }, isDone ? "✓" : i + 1),
+        h(
+          "span",
+          { class: "step-head" },
+          h("span", { class: "step-meta muted small" }, `Шаг ${i + 1} из ${steps.length} · ${s.time}${isDone ? " · изучен" : ""}`),
+          h("span", { class: "step-title" }, s.title)
+        )
+      ),
+      h(
+        "div",
+        { class: "step-body" },
+        renderBlocks(s.blocks),
+        renderLinks(s.links),
+        isCurrent
+          ? h("div", { class: "row" }, btn)
+          : !isDone
+          ? h("p", { class: "muted small" }, `Этот шаг можно отметить после шага ${currentIdx + 1}.`)
+          : null
+      )
+    );
+    sections.push(details);
+  });
+
+  const total = steps.length;
   setView(
     h("a", { href: "#/", class: "back" }, "← Все уровни"),
-    h("p", { class: "eyebrow" }, `Уровень ${level.id} · Теория`),
+    h("p", { class: "eyebrow" }, `Уровень ${level.id} · Маршрут изучения`),
     h("h1", {}, level.title),
-    !level.theoryRead && h("p", { class: "muted" }, "Прочитайте теорию до конца. Задачи откроются после неё."),
-    renderLesson(LESSONS[level.id] || []),
-    h("div", { class: "card cta" }, h("p", {}, "Всё понятно? Переходите к задачам. К теории можно вернуться в любой момент."), err, go)
+    h(
+      "p",
+      { class: "muted" },
+      level.theoryRead
+        ? "Теория пройдена. Можно повторять её в любой момент."
+        : "Проходите шаги по порядку: читайте теорию, смотрите видео и отмечайте шаг. Задачи откроются после последнего шага."
+    ),
+    progressBar(done.size, total),
+    h("p", { class: "small muted" }, `Изучено шагов: ${done.size} из ${total}`),
+    route,
+    h("div", { class: "steps" }, sections),
+    err,
+    level.theoryRead
+      ? h("div", { class: "card cta" }, h("p", {}, "🔓 Задачи этого уровня открыты."), h("a", { class: "btn", href: `#/level/${level.id}/tasks` }, "К задачам →"))
+      : null
   );
 }
 
@@ -261,7 +362,7 @@ function viewLevel(id, tab) {
       "p",
       { class: "small muted" },
       `Решено ${level.solvedCount}/${level.total}. Для следующего уровня нужно ${level.required}. `,
-      h("a", { href: `#/level/${level.id}/theory` }, "📖 Теория уровня")
+      h("a", { href: `#/level/${level.id}/theory` }, "📖 Маршрут и теория")
     ),
     h(
       "ol",
